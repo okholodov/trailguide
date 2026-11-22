@@ -37,5 +37,6 @@ function serviceWorker() {
 export default defineConfig({
   base: './',
   plugins: [serviceWorker()],
+  build: { chunkSizeWarningLimit: 1300 }, // MapLibre GL is ~1 MB; cached once for offline use
   define: { __BUILD__: JSON.stringify(new Date().toISOString().slice(0, 16).replace('T', ' ')) },
 });

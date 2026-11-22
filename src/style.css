@@ -19,15 +19,12 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 button { font: inherit; color: inherit; cursor: pointer; }
 
 #map { position: fixed; inset: 0; background: #2a2e33; }
-/* Filter each 256px tile, not the whole tile pane: on iOS Safari a filter on one huge
-   layer can exceed GPU limits and the entire map goes black. */
-.dark-map .leaflet-tile { filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.88) saturate(0.6); }
-.leaflet-container { font: inherit; }
-.leaflet-control-attribution { font-size: 9px; background: rgba(0, 0, 0, 0.45) !important; color: #bbb; }
-.leaflet-control-attribution a { color: #ccc; }
-.leaflet-top.leaflet-left { top: calc(var(--safe-top) + 4px); }
-.leaflet-control-scale-line { background: transparent; color: #fff; border-color: #fff; text-shadow: 0 0 3px #000; font-weight: 600; }
-.leaflet-bottom.leaflet-right { bottom: calc(var(--sheet-h, 150px) + 4px); }
+.maplibregl-map { font: inherit; }
+.maplibregl-ctrl-top-left { top: calc(var(--safe-top) + 4px); }
+.maplibregl-ctrl-scale { background: transparent; color: #fff; border-color: #fff; text-shadow: 0 0 3px #000; font-weight: 600; font-size: 11px; }
+.maplibregl-ctrl-bottom-right { bottom: calc(var(--sheet-h, 150px) + 4px); }
+.maplibregl-ctrl-attrib.maplibregl-compact { background: rgba(0, 0, 0, 0.45); color: #bbb; }
+.maplibregl-ctrl-attrib a { color: #ccc; }
 
 /* ---- top bar ---- */
 #topbar { position: fixed; top: calc(var(--safe-top) + 8px); right: 12px; z-index: 600; }
@@ -61,10 +58,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
 #btn-compass.rotated { border-color: rgba(255, 90, 60, .6); }
 
 /* ---- position marker ---- */
-.me-icon { background: none; border: 0; }
 .me { position: relative; width: 56px; height: 56px; }
 .me .halo { position: absolute; inset: 0; border-radius: 50%; background: rgba(75, 141, 255, 0.28); }
-.me .arrow { position: absolute; inset: 8px; width: 40px; height: 40px; display: none; transition: transform .3s; filter: drop-shadow(0 1px 2px rgba(0,0,0,.5)); }
+.me .arrow { position: absolute; inset: 8px; width: 40px; height: 40px; display: none; filter: drop-shadow(0 1px 2px rgba(0,0,0,.5)); }
 .me .arrow path { fill: var(--blue); stroke: #fff; stroke-width: 2.5; stroke-linejoin: round; }
 .me .dot { position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px; border-radius: 50%; background: var(--blue); border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
 .me.has-heading .arrow { display: block; }

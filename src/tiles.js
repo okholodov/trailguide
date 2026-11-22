@@ -1,5 +1,3 @@
-import L from 'leaflet';
-
 export const TILE_CACHE = 'tg-tiles';
 
 export const LAYERS = {
@@ -25,28 +23,27 @@ export const tileUrl = (layerKey, z, x, y) =>
 let cacheP;
 const tileCache = () => (cacheP ||= ('caches' in window ? caches.open(TILE_CACHE) : Promise.resolve(null)));
 
-/** A tile layer that reads saved tiles first, so the map works with no signal. */
-export const CachedTileLayer = L.TileLayer.extend({
-  createTile(coords, done) {
-    const img = document.createElement('img');
-    img.alt = '';
-    img.setAttribute('role', 'presentation');
-    img.crossOrigin = 'anonymous';
-    const url = this.getTileUrl(coords);
-    let blobUrl = null;
-    L.DomEvent.on(img, 'load', () => {
-      if (blobUrl) { URL.revokeObjectURL(blobUrl); blobUrl = null; }
-      this._tileOnLoad(done, img);
-    });
-    L.DomEvent.on(img, 'error', (e) => this._tileOnError(done, img, e));
-    tileCache()
-      .then((c) => c && c.match(url, { ignoreVary: true }))
-      .then((r) => r && r.blob())
-      .then((b) => { if (b) { blobUrl = URL.createObjectURL(b); img.src = blobUrl; } else img.src = url; })
-      .catch(() => { img.src = url; });
-    return img;
-  },
-});
+/**
+ * The map asks for tiles as `tg://host/path`; we answer from the offline cache first
+ * and only go to the network if the tile wasn't saved. This is what makes the map
+ * work with no signal.
+ */
+export const styleTileUrl = (layerKey) => LAYERS[layerKey].url.replace('https://', 'tg://');
+
+let protocolAdded = false;
+export function registerTileProtocol(maplibregl) {
+  if (protocolAdded) return;
+  protocolAdded = true;
+  maplibregl.addProtocol('tg', async (params, abortController) => {
+    const url = `https://${params.url.slice('tg://'.length)}`;
+    const cache = await tileCache().catch(() => null);
+    const hit = cache && (await cache.match(url, { ignoreVary: true }));
+    if (hit) return { data: await hit.arrayBuffer() };
+    const res = await fetch(url, { signal: abortController.signal });
+    if (!res.ok) throw new Error(`Tile ${res.status}`);
+    return { data: await res.arrayBuffer() };
+  });
+}
 
 const lon2x = (lon, n) => ((lon + 180) / 360) * n;
 const lat2y = (lat, n) => {

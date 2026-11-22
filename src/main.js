@@ -1,14 +1,12 @@
-import L from './leaflet-setup.js';
-import 'leaflet-rotate';
-import 'leaflet/dist/leaflet.css';
 import './style.css';
 import { db } from './db.js';
 import { parseGpx, toGpx } from './gpx.js';
-import { buildTrack, locateOnTrack, pointAt, bearing } from './geo.js';
-import { LAYERS, CachedTileLayer, tilesForTrack, downloadTiles, clearTiles } from './tiles.js';
+import { buildTrack, locateOnTrack, pointAt, bearing, haversine } from './geo.js';
+import { LAYERS, tilesForTrack, downloadTiles, clearTiles } from './tiles.js';
 import { watchGps, watchCompass, simulateWalk } from './gps.js';
 import { Recorder } from './recorder.js';
 import { drawProfile } from './profile.js';
+import { createMapView } from './mapview.js';
 import * as U from './units.js';
 
 const $ = (id) => document.getElementById(id);
@@ -33,57 +31,27 @@ const downloads = new Map(); // track id -> { done, total, controller }
 let profileX = null;
 
 // ---------- map ----------
-const map = L.map('map', {
-  zoomControl: false, maxZoom: 18, worldCopyJump: true,
-  rotate: true, touchRotate: true, rotateControl: false, bearing: 0, // two-finger twist rotates the map
-}).setView([39.8, -98.6], 4);
-map.attributionControl.setPrefix(false);
-if (import.meta.env.DEV) window.__tg = { map, L };
-let baseLayer = null;
-let scaleCtl = null;
+const mv = createMapView('map');
+if (import.meta.env.DEV || location.search.includes('debug')) window.__tg = { mv };
 
-function setBaseLayer() {
-  if (baseLayer) map.removeLayer(baseLayer);
-  const l = LAYERS[settings.layer];
-  baseLayer = new CachedTileLayer(l.url, { maxNativeZoom: l.maxNativeZoom, maxZoom: 18, attribution: l.attribution }).addTo(map);
-  document.body.classList.toggle('dark-map', settings.dark);
-}
+function setBaseLayer() { mv.setBase(settings.layer, settings.dark); }
+function setScale() { mv.setScaleUnits(U.isMetric()); }
 
-function setScale() {
-  scaleCtl?.remove();
-  scaleCtl = L.control.scale({ position: 'topleft', imperial: !U.isMetric(), metric: U.isMetric(), maxWidth: 140 }).addTo(map);
-}
-
-const trackLayer = L.layerGroup().addTo(map);
-// Walked path above the planned track; inside the rotate pane so it turns with the map.
-map.createPane('crumb', map.getPane('rotatePane')).style.zIndex = 450;
-const crumbLine = L.polyline([], { pane: 'crumb', color: '#2f9bf0', weight: 5, opacity: 0.95, lineCap: 'round', interactive: false }).addTo(map);
-const accCircle = L.circle([0, 0], { radius: 0, color: '#4b8dff', weight: 1, opacity: 0.5, fillOpacity: 0.12, interactive: false });
-const meIcon = L.divIcon({
-  className: 'me-icon',
-  iconSize: [56, 56],
-  html: '<div class="me"><div class="halo"></div><svg class="arrow" viewBox="0 0 40 40"><path d="M20 5 31 33 20 27 9 33z"/></svg><div class="dot"></div></div>',
-});
-const meMarker = L.marker([0, 0], { icon: meIcon, interactive: false, zIndexOffset: 1000 });
-const scrubMarker = L.circleMarker([0, 0], { radius: 7, color: '#fff', weight: 2, fillColor: '#ff9f1a', fillOpacity: 1 });
-
-map.on('dragstart', () => setFollow(false));
+// A finger drag pans away from you, so stop following. Zoom and rotate keep following.
+mv.on('dragstart', (e) => { if (e.originalEvent) setFollow(false); });
 
 function sheetHeight() { return $('sheet').getBoundingClientRect().height; }
+// "Centre" of the map = the part above the bottom panel and below the GPS badge.
+function updatePadding() { mv.setPadding({ top: 60, bottom: sheetHeight() }); }
 
-function centerOn(latlng, zoom = map.getZoom(), animate = true) {
-  // Put the position above the bottom panel: shift "screen down", which in an
-  // un-rotated projection is a vector turned back by the map's bearing.
-  const d = sheetHeight() / 2 - 30;
-  const b = (map.getBearing() * Math.PI) / 180;
-  const p = map.project(latlng, zoom).add([d * Math.sin(b), d * Math.cos(b)]);
-  map.setView(map.unproject(p, zoom), zoom, { animate });
+function centerOn(latlng, zoom, animate = true) {
+  mv.centerOn(latlng[0], latlng[1], zoom ?? mv.getZoom(), animate);
 }
 
 function fitTrack() {
   if (!active) return;
   setFollow(false); // otherwise the next GPS fix pulls the map back to you
-  map.fitBounds(active.nav.bounds, { paddingTopLeft: [30, 90], paddingBottomRight: [30, sheetHeight() + 20] });
+  mv.fitBounds(active.nav.bounds);
 }
 
 function setFollow(on) {
@@ -93,22 +61,7 @@ function setFollow(on) {
 
 // ---------- tracks ----------
 function drawActiveTrack() {
-  trackLayer.clearLayers();
-  if (!active) return;
-  const pts = active.stored.points.map((p) => [p[0], p[1]]);
-  L.polyline(pts, { color: '#0d2a12', weight: 9, opacity: 0.5, interactive: false }).addTo(trackLayer);
-  L.polyline(pts, { color: '#86e35b', weight: 5, opacity: 1, lineCap: 'round', interactive: false }).addTo(trackLayer);
-  const endIcon = (cls) => L.divIcon({ className: '', iconSize: [22, 22], html: `<div class="pin ${cls}"></div>` });
-  const first = pts[0], last = pts[pts.length - 1];
-  const loop = L.latLng(first).distanceTo(last) < 30;
-  L.marker(last, { icon: endIcon('finish'), interactive: false }).addTo(trackLayer);
-  L.marker(first, { icon: endIcon(loop ? 'start loop' : 'start'), interactive: false }).addTo(trackLayer);
-  for (const w of active.stored.waypoints || []) {
-    L.marker([w.lat, w.lon], {
-      icon: L.divIcon({ className: '', iconSize: [0, 0], html: `<div class="wpt"><i></i><span>${escapeHtml(w.name)}</span></div>` }),
-      interactive: false,
-    }).addTo(trackLayer);
-  }
+  mv.setTrack(active ? active.stored.points : null, active?.stored.waypoints || []);
 }
 
 const escapeHtml = (s) => String(s).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
@@ -351,22 +304,18 @@ function onFix(f) {
   gpsError = null;
   fix = f;
   lastFixAt = Date.now();
-  if (!map.hasLayer(meMarker)) {
-    meMarker.addTo(map);
-    accCircle.addTo(map);
-    if (follow) centerOn([f.lat, f.lon], Math.max(map.getZoom(), 15), false);
-  }
+  const first = !mv.hasMe();
+  mv.setMe(f);
+  if (first && follow) centerOn([f.lat, f.lon], Math.max(mv.getZoom(), 15), false);
   updateLocation();
 
   const trackEle = loc && loc.offset < 40 ? loc.ele : null;
   const gpsEle = f.alt != null && (f.altAcc == null || f.altAcc < 25) ? f.alt : null;
   if (rec.add(f, trackEle ?? gpsEle)) {
-    crumbLine.addLatLng([f.lat, f.lon]);
+    mv.setCrumb(rec.points);
     saveRecSoon();
   }
-  meMarker.setLatLng([f.lat, f.lon]);
-  accCircle.setLatLng([f.lat, f.lon]).setRadius(f.acc || 0);
-  if (follow) centerOn([f.lat, f.lon]);
+  if (follow && !first) centerOn([f.lat, f.lon]);
   updateHeading();
   updateBadge();
   render();
@@ -392,25 +341,20 @@ function updateLocation() {
 }
 
 function updateHeading() {
-  const el = meMarker.getElement();
-  if (!el) return;
   let h = null;
   if (compass && Date.now() - compass.at < 3000) h = compass.heading;
   else if (fix?.heading != null && !Number.isNaN(fix.heading) && (fix.speed ?? 0) > 0.4) h = fix.heading;
-  const me = el.querySelector('.me');
-  me.classList.toggle('has-heading', h != null);
-  // Markers don't turn with the map, so add the map's rotation to the heading.
-  if (h != null) me.querySelector('.arrow').style.transform = `rotate(${h + map.getBearing()}deg)`;
+  mv.setHeading(h); // the marker is map-aligned, so map rotation is handled for us
 }
 
 // Compass button needle always points to north on the (possibly rotated) map.
 function updateCompassButton() {
-  const b = map.getBearing();
-  $('btn-compass').querySelector('.needle').style.transform = `rotate(${b}deg)`;
+  const b = mv.getBearing();
+  $('btn-compass').querySelector('.needle').style.transform = `rotate(${-b}deg)`;
   const n = ((b % 360) + 360) % 360;
   $('btn-compass').classList.toggle('rotated', n > 1 && n < 359);
 }
-map.on('rotate', () => { updateHeading(); updateCompassButton(); });
+mv.on('rotate', updateCompassButton);
 
 function updateBadge() {
   const badge = $('gps-badge');
@@ -431,8 +375,7 @@ let compassStop = null;
 $('btn-compass').addEventListener('click', async () => {
   // Like Google Maps: if the map is turned, the first tap points it north again.
   if ($('btn-compass').classList.contains('rotated')) {
-    map.setBearing(0);
-    if (follow && fix) centerOn([fix.lat, fix.lon]);
+    mv.resetNorth();
     return;
   }
   if (compassStop) { toast('Map points north. Twist with two fingers to rotate it.'); return; }
@@ -446,7 +389,7 @@ $('btn-compass').addEventListener('click', async () => {
 $('btn-locate').addEventListener('click', () => {
   if (!fix) { toast('Waiting for a GPS fix…'); return; }
   setFollow(true);
-  centerOn([fix.lat, fix.lon], Math.max(map.getZoom(), 15));
+  centerOn([fix.lat, fix.lon], Math.max(mv.getZoom(), 15));
 });
 
 $('btn-fit').addEventListener('click', () => {
@@ -458,18 +401,18 @@ $('find-track').addEventListener('click', fitTrack);
 // "Show track" pill when the open track is completely off-screen.
 function updateFindTrack() {
   const pill = $('find-track');
-  if (!active || map.getBounds().intersects(active.nav.bounds)) { pill.hidden = true; return; }
-  const c = map.getCenter();
+  if (!active || mv.sees(active.nav.bounds)) { pill.hidden = true; return; }
+  const c = mv.getCenter();
   const from = fix ? [fix.lat, fix.lon] : [c.lat, c.lng];
   const near = fix && loc ? loc : locateOnTrack(active.nav, from[0], from[1]);
   const [lat, lon] = near.latlng;
   // Arrow points from the screen centre toward the track.
   const deg = bearing(c.lat, c.lng, lat, lon);
-  pill.querySelector('.arrow').style.transform = `rotate(${deg + map.getBearing()}deg)`;
+  pill.querySelector('.arrow').style.transform = `rotate(${deg - mv.getBearing()}deg)`;
   pill.querySelector('.txt').textContent = `Show track · ${fmtDist(near.offset)} away`;
   pill.hidden = false;
 }
-map.on('moveend zoomend rotate', updateFindTrack);
+mv.on('moveend', updateFindTrack);
 
 // ---------- recording ----------
 let recSaveTimer = null;
@@ -526,7 +469,7 @@ $('btn-discard').addEventListener('click', async () => {
 
 async function resetRecording() {
   rec = new Recorder();
-  crumbLine.setLatLngs([]);
+  mv.setCrumb([]);
   await saveRecNow();
   render();
   updateWakeLock();
@@ -584,7 +527,7 @@ function renderProfile() {
   } else {
     const cum = [0];
     const pts = rec.points;
-    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + L.latLng(pts[i - 1]).distanceTo(pts[i]));
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + haversine(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]));
     profileX = drawProfile(canvas, cum, pts.map((p) => p[2]), cum[cum.length - 1], { empty: 'Elevation profile appears here' });
   }
 }
@@ -599,7 +542,7 @@ function scrub(e) {
   const r = profileCanvas.getBoundingClientRect();
   scrubAlong = profileX.toAlong(e.clientX - r.left);
   const p = pointAt(active.nav, scrubAlong);
-  scrubMarker.setLatLng([p.lat, p.lon]).addTo(map);
+  mv.setScrub(p.lat, p.lon);
   renderProfile();
   const tip = $('profile-tip');
   tip.hidden = false;
@@ -613,7 +556,7 @@ profileCanvas.addEventListener('pointerdown', (e) => { profileCanvas.setPointerC
 profileCanvas.addEventListener('pointermove', (e) => { if (e.buttons || e.pointerType === 'touch') scrub(e); });
 const endScrub = () => {
   clearTimeout(scrubTimer);
-  scrubTimer = setTimeout(() => { scrubAlong = null; scrubMarker.remove(); $('profile-tip').hidden = true; renderProfile(); }, 1500);
+  scrubTimer = setTimeout(() => { scrubAlong = null; mv.setScrub(null); $('profile-tip').hidden = true; renderProfile(); }, 1500);
 };
 profileCanvas.addEventListener('pointerup', endScrub);
 profileCanvas.addEventListener('pointercancel', endScrub);
@@ -621,6 +564,7 @@ profileCanvas.addEventListener('pointercancel', endScrub);
 // ---------- sheet & dialogs ----------
 new ResizeObserver(() => {
   document.documentElement.style.setProperty('--sheet-h', `${sheetHeight()}px`);
+  updatePadding();
 }).observe($('sheet'));
 
 $('sheet-toggle').addEventListener('click', () => { $('sheet').classList.toggle('collapsed'); setTimeout(renderProfile, 260); });
@@ -645,11 +589,11 @@ $('btn-layers').addEventListener('click', async () => {
     ? `Offline storage used: ${(est.usage / 1048576).toFixed(1)} MB${persisted ? ' (protected from cleanup)' : ''}`
     : '';
   const m = $('map');
-  const c = map.getCenter();
+  const c = mv.getCenter();
   $('diag').textContent = [
     `Version ${__BUILD__}`,
-    `Map ${m.clientWidth}×${m.clientHeight}, zoom ${map.getZoom()}, centre ${c.lat.toFixed(4)}, ${c.lng.toFixed(4)}`,
-    `Tiles on screen: ${document.querySelectorAll('.leaflet-tile-loaded').length} loaded / ${document.querySelectorAll('.leaflet-tile').length}`,
+    `Map ${m.clientWidth}×${m.clientHeight}, zoom ${mv.getZoom().toFixed(1)}, bearing ${Math.round(mv.getBearing())}°, centre ${c.lat.toFixed(4)}, ${c.lng.toFixed(4)}`,
+    `Tiles loaded: ${mv.map.areTilesLoaded() ? 'yes' : 'loading…'}`,
     `Tracks: ${tracks.size}, open: ${active ? active.stored.points.length + ' points' : 'none'}`,
     errorLog.length ? `Recent errors:\n${errorLog.join('\n')}` : 'No errors recorded',
   ].join('\n');
@@ -700,7 +644,7 @@ async function updateWakeLock() {
   }
 }
 // iOS can resume a home-screen app with a stale viewport size; re-measure the map.
-const refreshMap = () => { map.invalidateSize(); updateFindTrack(); };
+const refreshMap = () => { mv.resize(); updateFindTrack(); };
 document.addEventListener('visibilitychange', () => {
   updateWakeLock();
   if (document.visibilityState === 'visible') { render(); refreshMap(); }
@@ -732,12 +676,13 @@ async function boot() {
   U.setMetric(settings.units === 'metric');
   setBaseLayer();
   setScale();
+  updatePadding(); // before the first fit, so the track isn't hidden under the panel
 
   for (const t of await db.tracks()) tracks.set(t.id, t);
   const savedRec = await db.get('recording');
   if (savedRec) {
     rec = new Recorder(savedRec);
-    crumbLine.setLatLngs(rec.points.map((p) => [p[0], p[1]]));
+    mv.setCrumb(rec.points);
   }
   const activeId = await db.get('activeTrackId');
   if (activeId && tracks.has(activeId) && !safeMode) await setActive(activeId);
@@ -749,7 +694,7 @@ async function boot() {
   setFollow(true);
   watchGps(onFix, onGpsError);
   setInterval(() => { render(); updateBadge(); }, 1000);
-  window.addEventListener('resize', () => { renderProfile(); map.invalidateSize(); });
+  window.addEventListener('resize', () => { renderProfile(); mv.resize(); updatePadding(); });
 
   if (!tracks.size) setTimeout(() => toast('Tap "My tracks" to import a GPX file', 5000), 800);
 
