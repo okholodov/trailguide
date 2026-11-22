@@ -453,7 +453,7 @@ function renderProfile() {
   const canvas = $('profile');
   if (active) {
     const nav = active.nav;
-    profileX = drawProfile(canvas, nav.cum, nav.points.map((p) => p[2]), loc ? loc.along : null);
+    profileX = drawProfile(canvas, nav.cum, nav.points.map((p) => p[2]), loc ? loc.along : null, { scrub: scrubAlong });
   } else {
     const cum = [0];
     const pts = rec.points;
@@ -464,19 +464,30 @@ function renderProfile() {
 
 // Scrub the profile to see where a climb is on the map.
 const profileCanvas = $('profile');
+let scrubAlong = null;
+let scrubTimer = null;
 function scrub(e) {
   if (!active || !profileX) return;
+  clearTimeout(scrubTimer);
   const r = profileCanvas.getBoundingClientRect();
-  const along = profileX(e.clientX - r.left);
-  const p = pointAt(active.nav, along);
+  scrubAlong = profileX.toAlong(e.clientX - r.left);
+  const p = pointAt(active.nav, scrubAlong);
   scrubMarker.setLatLng([p.lat, p.lon]).addTo(map);
+  renderProfile();
   const tip = $('profile-tip');
   tip.hidden = false;
-  tip.textContent = `${fmtDist(along)} · ${p.ele != null ? U.ele(p.ele).join(' ') : ''}`;
+  tip.textContent = `${fmtDist(scrubAlong)} · ${p.ele != null ? U.ele(p.ele).join(' ') : ''}`;
+  // Keep the label above the finger, but inside the panel.
+  const half = tip.offsetWidth / 2;
+  const x = Math.min(Math.max(profileX.toX(scrubAlong), half), r.width - half);
+  tip.style.left = `${x}px`;
 }
 profileCanvas.addEventListener('pointerdown', (e) => { profileCanvas.setPointerCapture(e.pointerId); scrub(e); });
 profileCanvas.addEventListener('pointermove', (e) => { if (e.buttons || e.pointerType === 'touch') scrub(e); });
-const endScrub = () => { setTimeout(() => { scrubMarker.remove(); $('profile-tip').hidden = true; }, 1500); };
+const endScrub = () => {
+  clearTimeout(scrubTimer);
+  scrubTimer = setTimeout(() => { scrubAlong = null; scrubMarker.remove(); $('profile-tip').hidden = true; renderProfile(); }, 1500);
+};
 profileCanvas.addEventListener('pointerup', endScrub);
 profileCanvas.addEventListener('pointercancel', endScrub);
 
