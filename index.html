@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#111417" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="TrailGuide" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" href="./icons/icon-192.png" />
+  <title>TrailGuide</title>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="topbar">
+    <div id="gps-badge" class="badge searching"><span class="bars"><i></i><i></i><i></i></span><span class="label">Searching GPS…</span></div>
+  </div>
+  <div id="offtrack" hidden></div>
+  <div id="toast" hidden></div>
+
+  <div class="fab-col left">
+    <button class="fab" id="btn-compass" aria-label="Enable compass" title="Compass">
+      <svg viewBox="0 0 24 24"><path d="M12 2 16 12H8z" fill="#ff5a3c"/><path d="M12 22 8 12h8z" fill="currentColor" opacity=".55"/></svg>
+    </button>
+    <button class="fab" id="btn-tracks" aria-label="Tracks" title="Tracks">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 18h7a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h7"/></svg>
+    </button>
+    <button class="fab" id="btn-locate" aria-label="Follow my position" title="Follow me">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20 4 4 11l7 2 2 7z"/></svg>
+    </button>
+  </div>
+
+  <div class="fab-col right">
+    <button class="fab" id="btn-layers" aria-label="Map and settings" title="Map & settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></svg>
+    </button>
+    <button class="fab" id="btn-fit" aria-label="Show whole track" title="Show whole track">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+    </button>
+  </div>
+
+  <section id="sheet">
+    <button class="handle" id="sheet-toggle" aria-label="Expand or collapse stats"><span></span></button>
+    <div class="summary" id="sheet-summary">
+      <div><b id="s-time">0:00:00</b></div>
+      <div class="sep"></div>
+      <div><b id="s-dist">0.00</b> <small id="s-dist-u">mi</small></div>
+      <span class="chev" aria-hidden="true">⌃</span>
+    </div>
+    <div class="details">
+      <div class="track-name" id="track-name"></div>
+      <div class="grid">
+        <div><b id="d-time">0:00:00</b><span>Time</span></div>
+        <div><b id="d-dist">0.00</b><small id="d-dist-u">mi</small><span>Distance</span></div>
+        <div><b id="d-gain">0</b><small id="d-gain-u">ft</small><span>Elev. gain</span></div>
+        <div><b id="d-rem">—</b><small id="d-rem-u"></small><span>Remaining</span></div>
+        <div><b id="d-pace">—</b><small id="d-pace-u">/mi</small><span>Pace</span></div>
+        <div><b id="d-speed">0.0</b><small id="d-speed-u">mph</small><span>Speed</span></div>
+      </div>
+      <div class="profile-wrap"><canvas id="profile"></canvas><div id="profile-tip" hidden></div></div>
+      <div class="actions">
+        <button class="round" id="btn-more" aria-label="More">•••</button>
+        <button class="primary" id="btn-main">Start</button>
+      </div>
+    </div>
+  </section>
+
+  <dialog id="dlg-tracks" class="sheet-dlg">
+    <header><h2>Tracks</h2><button class="x" data-close>✕</button></header>
+    <div class="row-btns">
+      <label class="btn">Import GPX<input type="file" id="file-gpx" hidden /></label>
+      <button class="btn ghost" id="btn-sample">Load sample track</button>
+    </div>
+    <ul id="track-list"></ul>
+  </dialog>
+
+  <dialog id="dlg-layers" class="sheet-dlg">
+    <header><h2>Map &amp; settings</h2><button class="x" data-close>✕</button></header>
+    <fieldset><legend>Base map</legend><div id="layer-options"></div></fieldset>
+    <label class="switch"><input type="checkbox" id="opt-dark" /> Dark map</label>
+    <label class="switch"><input type="checkbox" id="opt-awake" /> Keep screen on while navigating</label>
+    <fieldset><legend>Units</legend>
+      <label class="radio"><input type="radio" name="units" value="imperial" /> Miles / feet</label>
+      <label class="radio"><input type="radio" name="units" value="metric" /> Kilometres / metres</label>
+    </fieldset>
+    <p class="muted" id="storage-info"></p>
+    <button class="btn danger ghost" id="btn-clear-tiles">Delete all offline maps</button>
+  </dialog>
+
+  <dialog id="dlg-more" class="sheet-dlg">
+    <header><h2>Recording</h2><button class="x" data-close>✕</button></header>
+    <button class="btn" id="btn-finish">Finish &amp; save hike</button>
+    <button class="btn ghost" id="btn-export-rec">Export recording as GPX</button>
+    <button class="btn ghost" id="btn-sim">Simulate a walk on the active track</button>
+    <button class="btn danger ghost" id="btn-discard">Discard recording</button>
+  </dialog>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
