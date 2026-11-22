@@ -98,6 +98,18 @@
     </fieldset>
     <p class="muted" id="storage-info"></p>
     <button class="btn danger ghost" id="btn-clear-tiles">Delete all offline maps</button>
+    <details class="diag-wrap">
+      <summary>Diagnostics</summary>
+      <pre id="diag"></pre>
+      <button class="btn ghost" id="btn-reload">Restart app</button>
+    </details>
+  </dialog>
+
+  <dialog id="dlg-ask" class="sheet-dlg">
+    <header><h2 id="ask-title"></h2></header>
+    <p id="ask-text" class="ask-text"></p>
+    <button class="btn" id="ask-yes"></button>
+    <button class="btn ghost" id="ask-no"></button>
   </dialog>
 
   <dialog id="dlg-more" class="sheet-dlg">

@@ -19,7 +19,9 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 button { font: inherit; color: inherit; cursor: pointer; }
 
 #map { position: fixed; inset: 0; background: #2a2e33; }
-.dark-map .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.88) saturate(0.6); }
+/* Filter each 256px tile, not the whole tile pane: on iOS Safari a filter on one huge
+   layer can exceed GPU limits and the entire map goes black. */
+.dark-map .leaflet-tile { filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.88) saturate(0.6); }
 .leaflet-container { font: inherit; }
 .leaflet-control-attribution { font-size: 9px; background: rgba(0, 0, 0, 0.45) !important; color: #bbb; }
 .leaflet-control-attribution a { color: #ccc; }
@@ -140,6 +142,10 @@ dialog h2 { margin: 0; font-size: 20px; }
 .t-title .tag { font-size: 12px; font-weight: 700; color: #0b1a07; background: var(--accent); padding: 2px 8px; border-radius: 8px; }
 .t-title .go { font-size: 22px; color: var(--muted); line-height: 1; }
 .hint { margin: 2px 0 4px; }
+.ask-text { white-space: pre-line; color: #d6d9de; margin: 0 0 10px; }
+.diag-wrap { margin-top: 12px; color: var(--muted); font-size: 13px; }
+.diag-wrap summary { padding: 8px 0; cursor: pointer; }
+#diag { white-space: pre-wrap; word-break: break-word; font-size: 11px; background: #0d0f12; padding: 10px; border-radius: 10px; margin: 4px 0 8px; }
 .t-main b { font-size: 16px; }
 .t-btns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .t-btns .btn.sm { padding: 0 4px; white-space: nowrap; }

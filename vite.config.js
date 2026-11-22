@@ -37,4 +37,5 @@ function serviceWorker() {
 export default defineConfig({
   base: './',
   plugins: [serviceWorker()],
+  define: { __BUILD__: JSON.stringify(new Date().toISOString().slice(0, 16).replace('T', ' ')) },
 });

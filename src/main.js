@@ -22,6 +22,10 @@ let lastFixAt = 0;
 let compass = null; // { heading, at }
 let follow = true;
 let loc = null; // position snapped onto active track
+// How far along the track you've got. Only advances while you're actually near the
+// track, so standing 60 miles away doesn't count as "halfway done".
+let progressAlong = null;
+const NEAR_TRACK_M = 300;
 let rec = new Recorder();
 let simStop = null;
 const downloads = new Map(); // track id -> { done, total, controller }
@@ -103,6 +107,7 @@ async function setActive(id, { fit = true } = {}) {
   const stored = id && tracks.get(id);
   active = stored ? { stored, nav: buildTrack(stored.points) } : null;
   loc = null;
+  progressAlong = null;
   if (stored) { stored.lastOpenedAt = Date.now(); await db.putTrack(stored); }
   await db.set('activeTrackId', active ? id : null);
   drawActiveTrack();
@@ -132,8 +137,42 @@ async function addTrack(parsed, source = 'import') {
   return stored;
 }
 
+/**
+ * In-app yes/no sheet. Replaces window.confirm/alert, which in iOS home-screen apps
+ * can block the page without ever showing (e.g. right after the Files picker closes).
+ */
+function ask(title, text, yes = 'OK', no = 'Cancel') {
+  const dlg = $('dlg-ask');
+  $('ask-title').textContent = title;
+  $('ask-text').textContent = text;
+  $('ask-yes').textContent = yes;
+  $('ask-no').textContent = no || '';
+  $('ask-no').hidden = !no;
+  return new Promise((resolve) => {
+    const done = (v) => { dlg.onclose = null; if (dlg.open) dlg.close(); resolve(v); };
+    $('ask-yes').onclick = () => done(true);
+    $('ask-no').onclick = () => done(false);
+    dlg.onclose = () => done(false);
+    for (const d of document.querySelectorAll('dialog[open]')) if (d !== dlg) d.close();
+    dlg.showModal();
+  });
+}
+const tell = (title, text) => ask(title, text, 'OK', null);
+
+/** Resolve once the page is visible again and has painted (iOS returns from the Files picker hidden). */
+function whenVisible() {
+  return new Promise((resolve) => {
+    const go = () => requestAnimationFrame(() => requestAnimationFrame(resolve));
+    if (document.visibilityState === 'visible') go();
+    else document.addEventListener('visibilitychange', function h() {
+      if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', h); go(); }
+    });
+  });
+}
+
 /** Import one or more GPX files; opens the last one and offers to save offline maps. */
 async function importFiles(files) {
+  await whenVisible();
   // Ask iOS/Chrome not to clear our data when the phone is low on space.
   navigator.storage?.persist?.();
   const added = [];
@@ -146,18 +185,19 @@ async function importFiles(files) {
       errors.push(`${f.name}: ${err.message}`);
     }
   }
-  if (errors.length) alert(`Could not import:\n\n${errors.join('\n')}`);
+  $('dlg-tracks').close();
+  if (errors.length) await tell('Could not import', errors.join('\n'));
   if (!added.length) return;
   await setActive(added[added.length - 1].id);
-  $('dlg-tracks').close();
-  toast(added.length === 1 ? `Saved "${added[0].name}" to My tracks` : `Saved ${added.length} tracks to My tracks`, 3500);
-
-  const tiles = added.reduce((n, t) => n + tilesForTrack(t.points, settings.layer).length, 0);
-  const mb = ((tiles * 20) / 1024).toFixed(0);
-  const what = added.length === 1 ? `"${added[0].name}"` : `these ${added.length} tracks`;
-  if (navigator.onLine && confirm(`Save the map along ${what} for offline use?\n\nAbout ${tiles} tiles (~${mb} MB). Do this now, while you have signal.`)) {
-    for (const t of added) await startDownload(t);
+  if (!navigator.onLine) {
+    toast(added.length === 1 ? `Saved "${added[0].name}" to My tracks` : `Saved ${added.length} tracks to My tracks`, 3500);
+    return;
   }
+  const tiles = added.reduce((n, t) => n + tilesForTrack(t.points, settings.layer).length, 0);
+  const mb = Math.max(1, Math.round((tiles * 20) / 1024));
+  const saved = added.length === 1 ? `"${added[0].name}" is saved to My tracks.` : `${added.length} tracks are saved to My tracks.`;
+  const ok = await ask('Save map for offline use?', `${saved}\n\nDownload the map along ${added.length === 1 ? 'it' : 'them'} now, while you have signal? About ${tiles} tiles (~${mb} MB).`, 'Save offline map', 'Not now');
+  if (ok) for (const t of added) await startDownload(t);
 }
 
 const openTracks = () => { renderTrackList(); $('dlg-tracks').showModal(); };
@@ -255,7 +295,7 @@ $('track-list').addEventListener('click', async (e) => {
     case 'cancel': downloads.get(id)?.controller.abort(); break;
     case 'export': shareGpx(t.name, t.recordedPoints || t.points, t.waypoints); break;
     case 'del':
-      if (!confirm(`Delete "${t.name}"? Saved map tiles are kept.`)) return;
+      if (!(await ask('Delete track?', `"${t.name}" will be removed from My tracks. Saved map tiles are kept.`, 'Delete', 'Cancel'))) return;
       tracks.delete(id);
       await db.deleteTrack(id);
       if (active?.stored.id === id) await setActive(null, { fit: false });
@@ -274,7 +314,7 @@ $('btn-sample').addEventListener('click', async () => {
   try {
     const res = await fetch('./samples/tammany-loop.gpx');
     await importFiles([new File([await res.text()], 'tammany-loop.gpx')]);
-  } catch (err) { alert(err.message); }
+  } catch (err) { tell('Could not load sample', err.message); }
 });
 
 $('btn-open-tracks').addEventListener('click', openTracks);
@@ -337,7 +377,8 @@ function onGpsError(err) {
 
 function updateLocation() {
   if (!active || !fix) { loc = null; return; }
-  loc = locateOnTrack(active.nav, fix.lat, fix.lon, loc?.along ?? null);
+  loc = locateOnTrack(active.nav, fix.lat, fix.lon, progressAlong);
+  if (loc.offset <= NEAR_TRACK_M) progressAlong = loc.along;
 }
 
 function updateHeading() {
@@ -450,7 +491,7 @@ $('btn-export-rec').addEventListener('click', () => {
 });
 
 $('btn-discard').addEventListener('click', async () => {
-  if (!confirm('Discard the current recording?')) return;
+  if (!(await ask('Discard recording?', 'Your recorded path, time and distance will be deleted.', 'Discard', 'Cancel'))) return;
   $('dlg-more').close();
   await resetRecording();
 });
@@ -488,7 +529,7 @@ function render() {
   const spd = fix && now - lastFixAt < 15000 ? (fix.speed != null && fix.speed >= 0 ? fix.speed : 0) : 0;
   setVal('d-speed', U.speed(spd));
 
-  if (loc) setVal('d-rem', U.dist(loc.remaining));
+  if (active) setVal('d-rem', U.dist(active.nav.total - (progressAlong ?? 0)));
   else setVal('d-rem', ['—', '']);
   $('track-name').textContent = active ? active.stored.name : 'No track open';
   $('track-chip').textContent = active ? 'Change ›' : 'Open ›';
@@ -511,7 +552,7 @@ function renderProfile() {
   const canvas = $('profile');
   if (active) {
     const nav = active.nav;
-    profileX = drawProfile(canvas, nav.cum, nav.points.map((p) => p[2]), loc ? loc.along : null, { scrub: scrubAlong });
+    profileX = drawProfile(canvas, nav.cum, nav.points.map((p) => p[2]), progressAlong, { scrub: scrubAlong });
   } else {
     const cum = [0];
     const pts = rec.points;
@@ -575,7 +616,18 @@ $('btn-layers').addEventListener('click', async () => {
   $('storage-info').textContent = est
     ? `Offline storage used: ${(est.usage / 1048576).toFixed(1)} MB${persisted ? ' (protected from cleanup)' : ''}`
     : '';
+  const m = $('map');
+  const c = map.getCenter();
+  $('diag').textContent = [
+    `Version ${__BUILD__}`,
+    `Map ${m.clientWidth}×${m.clientHeight}, zoom ${map.getZoom()}, centre ${c.lat.toFixed(4)}, ${c.lng.toFixed(4)}`,
+    `Tiles on screen: ${document.querySelectorAll('.leaflet-tile-loaded').length} loaded / ${document.querySelectorAll('.leaflet-tile').length}`,
+    `Tracks: ${tracks.size}, open: ${active ? active.stored.points.length + ' points' : 'none'}`,
+    errorLog.length ? `Recent errors:\n${errorLog.join('\n')}` : 'No errors recorded',
+  ].join('\n');
 });
+
+$('btn-reload').addEventListener('click', () => location.reload());
 
 $('dlg-layers').addEventListener('change', async (e) => {
   const t = e.target;
@@ -587,7 +639,7 @@ $('dlg-layers').addEventListener('change', async (e) => {
 });
 
 $('btn-clear-tiles').addEventListener('click', async () => {
-  if (!confirm('Delete all saved offline maps? You will need signal to download them again.')) return;
+  if (!(await ask('Delete all offline maps?', 'You will need signal to download them again.', 'Delete', 'Cancel'))) return;
   await clearTiles();
   for (const t of tracks.values()) if (t.offline) { t.offline = null; await db.putTrack(t); }
   setBaseLayer();
@@ -619,11 +671,35 @@ async function updateWakeLock() {
     wakeLock = null;
   }
 }
-document.addEventListener('visibilitychange', () => { updateWakeLock(); if (document.visibilityState === 'visible') render(); });
+// iOS can resume a home-screen app with a stale viewport size; re-measure the map.
+const refreshMap = () => { map.invalidateSize(); updateFindTrack(); };
+document.addEventListener('visibilitychange', () => {
+  updateWakeLock();
+  if (document.visibilityState === 'visible') { render(); refreshMap(); }
+});
+window.addEventListener('pageshow', refreshMap);
+window.addEventListener('orientationchange', () => setTimeout(refreshMap, 300));
 document.addEventListener('click', () => { if (!wakeLock) updateWakeLock(); });
+
+// ---------- errors & safe mode ----------
+const errorLog = (() => { try { return JSON.parse(localStorage.getItem('tg-errors') || '[]'); } catch { return []; } })();
+function logError(msg) {
+  errorLog.push(`${new Date().toLocaleString()}: ${msg}`);
+  errorLog.splice(0, Math.max(0, errorLog.length - 8));
+  try { localStorage.setItem('tg-errors', JSON.stringify(errorLog)); } catch { /* storage unavailable */ }
+  toast(`Error: ${msg}`, 8000);
+}
+window.addEventListener('error', (e) => logError(e.message || String(e.error)));
+window.addEventListener('unhandledrejection', (e) => logError(e.reason?.message || String(e.reason)));
+
+// If the previous launch never finished starting up, start without opening a track.
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { /* ignore */ } };
+const safeMode = !!lsGet('tg-booting');
 
 // ---------- boot ----------
 async function boot() {
+  lsSet('tg-booting', String(Date.now()));
   Object.assign(settings, (await db.get('settings')) || {});
   U.setMetric(settings.units === 'metric');
   setBaseLayer();
@@ -636,13 +712,16 @@ async function boot() {
     crumbLine.setLatLngs(rec.points.map((p) => [p[0], p[1]]));
   }
   const activeId = await db.get('activeTrackId');
-  if (activeId && tracks.has(activeId)) await setActive(activeId);
+  if (activeId && tracks.has(activeId) && !safeMode) await setActive(activeId);
   else { render(); renderTrackList(); }
+  if (safeMode) toast('The app didn\'t start properly last time, so no track was opened. Your tracks are still in My tracks.', 8000);
+  // Startup counts as successful once the app has stayed responsive for a few seconds.
+  setTimeout(() => lsSet('tg-booting', null), 4000);
 
   setFollow(true);
   watchGps(onFix, onGpsError);
   setInterval(() => { render(); updateBadge(); }, 1000);
-  window.addEventListener('resize', () => renderProfile());
+  window.addEventListener('resize', () => { renderProfile(); map.invalidateSize(); });
 
   if (!tracks.size) setTimeout(() => toast('Tap "My tracks" to import a GPX file', 5000), 800);
 
