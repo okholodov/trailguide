@@ -3,7 +3,7 @@ import 'leaflet/dist/leaflet.css';
 import './style.css';
 import { db } from './db.js';
 import { parseGpx, toGpx } from './gpx.js';
-import { buildTrack, locateOnTrack, pointAt } from './geo.js';
+import { buildTrack, locateOnTrack, pointAt, bearing } from './geo.js';
 import { LAYERS, CachedTileLayer, tilesForTrack, downloadTiles, clearTiles } from './tiles.js';
 import { watchGps, watchCompass, simulateWalk } from './gps.js';
 import { Recorder } from './recorder.js';
@@ -68,6 +68,7 @@ function centerOn(latlng, zoom = map.getZoom(), animate = true) {
 
 function fitTrack() {
   if (!active) return;
+  setFollow(false); // otherwise the next GPS fix pulls the map back to you
   map.fitBounds(active.nav.bounds, { paddingTopLeft: [30, 90], paddingBottomRight: [30, sheetHeight() + 20] });
 }
 
@@ -102,10 +103,12 @@ async function setActive(id, { fit = true } = {}) {
   const stored = id && tracks.get(id);
   active = stored ? { stored, nav: buildTrack(stored.points) } : null;
   loc = null;
+  if (stored) { stored.lastOpenedAt = Date.now(); await db.putTrack(stored); }
   await db.set('activeTrackId', active ? id : null);
   drawActiveTrack();
   if (fit) fitTrack();
   updateLocation();
+  updateFindTrack();
   render();
   renderTrackList();
   updateWakeLock();
@@ -129,17 +132,35 @@ async function addTrack(parsed, source = 'import') {
   return stored;
 }
 
-async function importGpxText(text, filename) {
-  const parsed = parseGpx(text, filename.replace(/\.gpx$/i, ''));
-  const stored = await addTrack(parsed);
-  await setActive(stored.id);
+/** Import one or more GPX files; opens the last one and offers to save offline maps. */
+async function importFiles(files) {
+  // Ask iOS/Chrome not to clear our data when the phone is low on space.
+  navigator.storage?.persist?.();
+  const added = [];
+  const errors = [];
+  for (const f of files) {
+    try {
+      const parsed = parseGpx(await f.text(), f.name.replace(/\.gpx$/i, ''));
+      added.push(await addTrack(parsed));
+    } catch (err) {
+      errors.push(`${f.name}: ${err.message}`);
+    }
+  }
+  if (errors.length) alert(`Could not import:\n\n${errors.join('\n')}`);
+  if (!added.length) return;
+  await setActive(added[added.length - 1].id);
   $('dlg-tracks').close();
-  const keys = tilesForTrack(stored.points, settings.layer);
-  const mb = ((keys.length * 20) / 1024).toFixed(0);
-  if (navigator.onLine && confirm(`Save the map along "${stored.name}" for offline use?\n\nAbout ${keys.length} tiles (~${mb} MB). Do this now, while you have signal.`)) {
-    startDownload(stored);
+  toast(added.length === 1 ? `Saved "${added[0].name}" to My tracks` : `Saved ${added.length} tracks to My tracks`, 3500);
+
+  const tiles = added.reduce((n, t) => n + tilesForTrack(t.points, settings.layer).length, 0);
+  const mb = ((tiles * 20) / 1024).toFixed(0);
+  const what = added.length === 1 ? `"${added[0].name}"` : `these ${added.length} tracks`;
+  if (navigator.onLine && confirm(`Save the map along ${what} for offline use?\n\nAbout ${tiles} tiles (~${mb} MB). Do this now, while you have signal.`)) {
+    for (const t of added) await startDownload(t);
   }
 }
+
+const openTracks = () => { renderTrackList(); $('dlg-tracks').showModal(); };
 
 async function startDownload(stored) {
   if (downloads.has(stored.id)) return;
@@ -175,7 +196,8 @@ function fmtDist(m) { const [v, u] = U.dist(m); return `${v} ${u}`; }
 function renderTrackList() {
   const ul = $('track-list');
   if (!ul) return;
-  const list = [...tracks.values()].sort((a, b) => b.createdAt - a.createdAt);
+  const recent = (t) => t.lastOpenedAt || t.createdAt;
+  const list = [...tracks.values()].sort((a, b) => recent(b) - recent(a));
   if (!list.length) {
     ul.innerHTML = '<li class="empty">No tracks yet. Import a GPX file from Files, AllTrails, CalTopo, Gaia, etc.</li>';
     return;
@@ -188,14 +210,14 @@ function renderTrackList() {
       ? `<span class="dl" data-dl="${t.id}">Saving map ${Math.round((dl.done / dl.total) * 100)}%</span>`
       : off ? `<span class="ok">Offline map ✓</span>` : `<span class="warn">Map not saved offline</span>`;
     return `<li class="${isActive ? 'active' : ''}" data-id="${t.id}">
-      <div class="t-main">
-        <b>${escapeHtml(t.name)}</b>
+      <div class="t-main" data-act="nav">
+        <div class="t-title"><b>${escapeHtml(t.name)}</b>${isActive ? '<span class="tag">Open</span>' : '<span class="go">›</span>'}</div>
         <span class="muted">${fmtDist(t.distance)} · ↑ ${U.short(t.gain)}${t.source === 'recorded' ? ' · recorded' : ''}</span>
         ${offlineLabel}
       </div>
       <div class="t-btns">
-        <button class="btn sm" data-act="nav">${isActive ? 'Active' : 'Navigate'}</button>
         <button class="btn sm ghost" data-act="${dl ? 'cancel' : 'dl'}">${dl ? 'Cancel' : off ? 'Update map' : 'Save map'}</button>
+        <button class="btn sm ghost" data-act="rename">Rename</button>
         <button class="btn sm ghost" data-act="export">Export</button>
         <button class="btn sm ghost danger" data-act="del">Delete</button>
       </div>
@@ -210,12 +232,25 @@ function updateDownloadRow(id) {
 }
 
 $('track-list').addEventListener('click', async (e) => {
-  const btn = e.target.closest('button[data-act]');
+  const btn = e.target.closest('[data-act]');
   if (!btn) return;
   const id = btn.closest('li').dataset.id;
   const t = tracks.get(id);
   switch (btn.dataset.act) {
-    case 'nav': await setActive(id); $('dlg-tracks').close(); break;
+    case 'nav':
+      $('dlg-tracks').close();
+      if (active?.stored.id !== id) { await setActive(id); toast(`Opened "${t.name}"`); }
+      else fitTrack();
+      break;
+    case 'rename': {
+      const name = prompt('Track name', t.name)?.trim();
+      if (!name) return;
+      t.name = name;
+      await db.putTrack(t);
+      renderTrackList();
+      render();
+      break;
+    }
     case 'dl': startDownload(t); break;
     case 'cancel': downloads.get(id)?.controller.abort(); break;
     case 'export': shareGpx(t.name, t.recordedPoints || t.points, t.waypoints); break;
@@ -230,19 +265,21 @@ $('track-list').addEventListener('click', async (e) => {
 });
 
 $('file-gpx').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
+  const files = [...e.target.files];
   e.target.value = '';
-  if (!file) return;
-  try { await importGpxText(await file.text(), file.name); }
-  catch (err) { alert(err.message); }
+  if (files.length) await importFiles(files);
 });
 
 $('btn-sample').addEventListener('click', async () => {
   try {
     const res = await fetch('./samples/tammany-loop.gpx');
-    await importGpxText(await res.text(), 'tammany-loop.gpx');
+    await importFiles([new File([await res.text()], 'tammany-loop.gpx')]);
   } catch (err) { alert(err.message); }
 });
+
+$('btn-open-tracks').addEventListener('click', openTracks);
+$('track-chip').addEventListener('click', openTracks);
+$('track-zoom').addEventListener('click', () => (active ? fitTrack() : openTracks()));
 
 async function shareGpx(name, points, waypoints) {
   const safe = name.replace(/[^\w\- ]+/g, '').trim() || 'track';
@@ -344,10 +381,26 @@ $('btn-locate').addEventListener('click', () => {
 });
 
 $('btn-fit').addEventListener('click', () => {
-  if (!active) { $('dlg-tracks').showModal(); return; }
-  setFollow(false);
+  if (!active) { openTracks(); return; }
   fitTrack();
 });
+$('find-track').addEventListener('click', fitTrack);
+
+// "Show track" pill when the open track is completely off-screen.
+function updateFindTrack() {
+  const pill = $('find-track');
+  if (!active || map.getBounds().intersects(active.nav.bounds)) { pill.hidden = true; return; }
+  const c = map.getCenter();
+  const from = fix ? [fix.lat, fix.lon] : [c.lat, c.lng];
+  const near = fix && loc ? loc : locateOnTrack(active.nav, from[0], from[1]);
+  const [lat, lon] = near.latlng;
+  // Arrow points from the screen centre toward the track.
+  const deg = bearing(c.lat, c.lng, lat, lon);
+  pill.querySelector('.arrow').style.transform = `rotate(${deg}deg)`;
+  pill.querySelector('.txt').textContent = `Show track · ${fmtDist(near.offset)} away`;
+  pill.hidden = false;
+}
+map.on('moveend zoomend', updateFindTrack);
 
 // ---------- recording ----------
 let recSaveTimer = null;
@@ -361,9 +414,12 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 window.addEventListener('pagehide', () => saveRecNow());
 
 $('btn-main').addEventListener('click', async () => {
-  if (rec.status === 'running') rec.pause();
-  else {
+  if (rec.status === 'running') {
+    rec.pause();
+    toast('Recording paused. Tap ••• to finish and save it.');
+  } else {
     rec.start();
+    toast('Recording your hike');
     if (fix && Date.now() - lastFixAt < 10000) onFix(fix);
   }
   await saveRecNow();
@@ -434,16 +490,18 @@ function render() {
 
   if (loc) setVal('d-rem', U.dist(loc.remaining));
   else setVal('d-rem', ['—', '']);
-  $('track-name').textContent = active ? active.stored.name : 'No track — tap the route button to import a GPX';
+  $('track-name').textContent = active ? active.stored.name : 'No track open';
+  $('track-chip').textContent = active ? 'Change ›' : 'Open ›';
 
   const main = $('btn-main');
-  main.textContent = rec.status === 'running' ? 'Pause' : rec.status === 'paused' ? 'Resume' : 'Start';
-  main.classList.toggle('paused', rec.status === 'running');
+  main.classList.toggle('running', rec.status === 'running');
+  main.classList.toggle('paused', rec.status === 'paused');
+  main.setAttribute('aria-label', rec.status === 'running' ? 'Pause recording' : rec.status === 'paused' ? 'Resume recording' : 'Record hike');
 
   const off = $('offtrack');
   if (loc && loc.offset > OFF_TRACK_M) {
     off.hidden = false;
-    off.textContent = `Off track · ${U.short(loc.offset)} away`;
+    off.textContent = `Off track · ${fmtDist(loc.offset)} away`;
   } else off.hidden = true;
 
   renderProfile();
@@ -503,7 +561,7 @@ document.querySelectorAll('dialog').forEach((d) => {
   d.addEventListener('click', (e) => { if (e.target === d || e.target.closest('[data-close]')) d.close(); });
 });
 
-$('btn-tracks').addEventListener('click', () => { renderTrackList(); $('dlg-tracks').showModal(); });
+$('btn-tracks').addEventListener('click', openTracks);
 
 $('btn-layers').addEventListener('click', async () => {
   $('layer-options').innerHTML = Object.entries(LAYERS).map(([k, l]) =>
@@ -586,7 +644,7 @@ async function boot() {
   setInterval(() => { render(); updateBadge(); }, 1000);
   window.addEventListener('resize', () => renderProfile());
 
-  if (!tracks.size) setTimeout(() => toast('Tap the route button (left) to import a GPX track', 5000), 800);
+  if (!tracks.size) setTimeout(() => toast('Tap "My tracks" to import a GPX file', 5000), 800);
 
   if ('serviceWorker' in navigator && import.meta.env.PROD) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});

@@ -20,6 +20,7 @@
     <div id="gps-badge" class="badge searching"><span class="bars"><i></i><i></i><i></i></span><span class="label">Searching GPS…</span></div>
   </div>
   <div id="offtrack" hidden></div>
+  <button id="find-track" hidden><span class="arrow">↑</span><span class="txt">Show track</span></button>
   <div id="toast" hidden></div>
 
   <div class="fab-col left">
@@ -52,7 +53,13 @@
       <span class="chev" aria-hidden="true">⌃</span>
     </div>
     <div class="details">
-      <div class="track-name" id="track-name"></div>
+      <div class="track-chip">
+        <button class="chip-name" id="track-zoom" title="Show the whole track">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 18h7a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h7"/></svg>
+          <span id="track-name"></span>
+        </button>
+        <button class="chip-action" id="track-chip">Change ›</button>
+      </div>
       <div class="grid">
         <div><b id="d-time">0:00:00</b><span>Time</span></div>
         <div><b id="d-dist">0.00</b><small id="d-dist-u">mi</small><span>Distance</span></div>
@@ -64,17 +71,19 @@
       <div class="profile-wrap"><canvas id="profile"></canvas><div id="profile-tip" hidden></div></div>
       <div class="actions">
         <button class="round" id="btn-more" aria-label="More">•••</button>
-        <button class="primary" id="btn-main">Start</button>
+        <button class="primary" id="btn-open-tracks">My tracks</button>
+        <button class="round rec" id="btn-main" aria-label="Record hike" title="Record hike"><i></i></button>
       </div>
     </div>
   </section>
 
   <dialog id="dlg-tracks" class="sheet-dlg">
-    <header><h2>Tracks</h2><button class="x" data-close>✕</button></header>
+    <header><h2>My tracks</h2><button class="x" data-close>✕</button></header>
     <div class="row-btns">
-      <label class="btn">Import GPX<input type="file" id="file-gpx" hidden /></label>
-      <button class="btn ghost" id="btn-sample">Load sample track</button>
+      <label class="btn">+ Import GPX<input type="file" id="file-gpx" multiple hidden /></label>
+      <button class="btn ghost" id="btn-sample">Add sample track</button>
     </div>
+    <p class="muted hint">Tap a track to open it. All tracks stay saved on this phone.</p>
     <ul id="track-list"></ul>
   </dialog>
 
@@ -93,6 +102,7 @@
 
   <dialog id="dlg-more" class="sheet-dlg">
     <header><h2>Recording</h2><button class="x" data-close>✕</button></header>
+    <p class="muted">The red button records your own hike (optional). You don't need it to follow a track.</p>
     <button class="btn" id="btn-finish">Finish &amp; save hike</button>
     <button class="btn ghost" id="btn-export-rec">Export recording as GPX</button>
     <button class="btn ghost" id="btn-sim">Simulate a walk on the active track</button>
