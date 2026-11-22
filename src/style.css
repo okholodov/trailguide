@@ -57,6 +57,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .fab svg { width: 24px; height: 24px; }
 .fab.on { color: var(--blue); border-color: rgba(75,141,255,.6); }
 #btn-locate.on svg { fill: var(--blue); }
+#btn-compass .needle { transform-origin: 12px 12px; transform-box: view-box; }
+#btn-compass.rotated { border-color: rgba(255, 90, 60, .6); }
 
 /* ---- position marker ---- */
 .me-icon { background: none; border: 0; }

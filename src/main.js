@@ -1,4 +1,5 @@
-import L from 'leaflet';
+import L from './leaflet-setup.js';
+import 'leaflet-rotate';
 import 'leaflet/dist/leaflet.css';
 import './style.css';
 import { db } from './db.js';
@@ -32,8 +33,12 @@ const downloads = new Map(); // track id -> { done, total, controller }
 let profileX = null;
 
 // ---------- map ----------
-const map = L.map('map', { zoomControl: false, maxZoom: 18, worldCopyJump: true }).setView([39.8, -98.6], 4);
+const map = L.map('map', {
+  zoomControl: false, maxZoom: 18, worldCopyJump: true,
+  rotate: true, touchRotate: true, rotateControl: false, bearing: 0, // two-finger twist rotates the map
+}).setView([39.8, -98.6], 4);
 map.attributionControl.setPrefix(false);
+if (import.meta.env.DEV) window.__tg = { map, L };
 let baseLayer = null;
 let scaleCtl = null;
 
@@ -50,7 +55,8 @@ function setScale() {
 }
 
 const trackLayer = L.layerGroup().addTo(map);
-map.createPane('crumb').style.zIndex = 450; // walked path above the planned track
+// Walked path above the planned track; inside the rotate pane so it turns with the map.
+map.createPane('crumb', map.getPane('rotatePane')).style.zIndex = 450;
 const crumbLine = L.polyline([], { pane: 'crumb', color: '#2f9bf0', weight: 5, opacity: 0.95, lineCap: 'round', interactive: false }).addTo(map);
 const accCircle = L.circle([0, 0], { radius: 0, color: '#4b8dff', weight: 1, opacity: 0.5, fillOpacity: 0.12, interactive: false });
 const meIcon = L.divIcon({
@@ -66,7 +72,11 @@ map.on('dragstart', () => setFollow(false));
 function sheetHeight() { return $('sheet').getBoundingClientRect().height; }
 
 function centerOn(latlng, zoom = map.getZoom(), animate = true) {
-  const p = map.project(latlng, zoom).add([0, sheetHeight() / 2 - 30]);
+  // Put the position above the bottom panel: shift "screen down", which in an
+  // un-rotated projection is a vector turned back by the map's bearing.
+  const d = sheetHeight() / 2 - 30;
+  const b = (map.getBearing() * Math.PI) / 180;
+  const p = map.project(latlng, zoom).add([d * Math.sin(b), d * Math.cos(b)]);
   map.setView(map.unproject(p, zoom), zoom, { animate });
 }
 
@@ -389,8 +399,18 @@ function updateHeading() {
   else if (fix?.heading != null && !Number.isNaN(fix.heading) && (fix.speed ?? 0) > 0.4) h = fix.heading;
   const me = el.querySelector('.me');
   me.classList.toggle('has-heading', h != null);
-  if (h != null) me.querySelector('.arrow').style.transform = `rotate(${h}deg)`;
+  // Markers don't turn with the map, so add the map's rotation to the heading.
+  if (h != null) me.querySelector('.arrow').style.transform = `rotate(${h + map.getBearing()}deg)`;
 }
+
+// Compass button needle always points to north on the (possibly rotated) map.
+function updateCompassButton() {
+  const b = map.getBearing();
+  $('btn-compass').querySelector('.needle').style.transform = `rotate(${b}deg)`;
+  const n = ((b % 360) + 360) % 360;
+  $('btn-compass').classList.toggle('rotated', n > 1 && n < 359);
+}
+map.on('rotate', () => { updateHeading(); updateCompassButton(); });
 
 function updateBadge() {
   const badge = $('gps-badge');
@@ -407,9 +427,17 @@ function updateBadge() {
   label.textContent = text;
 }
 
+let compassStop = null;
 $('btn-compass').addEventListener('click', async () => {
+  // Like Google Maps: if the map is turned, the first tap points it north again.
+  if ($('btn-compass').classList.contains('rotated')) {
+    map.setBearing(0);
+    if (follow && fix) centerOn([fix.lat, fix.lon]);
+    return;
+  }
+  if (compassStop) { toast('Map points north. Twist with two fingers to rotate it.'); return; }
   try {
-    await watchCompass((heading) => { compass = { heading, at: Date.now() }; updateHeading(); });
+    compassStop = await watchCompass((heading) => { compass = { heading, at: Date.now() }; updateHeading(); });
     $('btn-compass').classList.add('on');
     toast('Compass on: the arrow shows where you are facing');
   } catch (e) { toast(e.message); }
@@ -437,11 +465,11 @@ function updateFindTrack() {
   const [lat, lon] = near.latlng;
   // Arrow points from the screen centre toward the track.
   const deg = bearing(c.lat, c.lng, lat, lon);
-  pill.querySelector('.arrow').style.transform = `rotate(${deg}deg)`;
+  pill.querySelector('.arrow').style.transform = `rotate(${deg + map.getBearing()}deg)`;
   pill.querySelector('.txt').textContent = `Show track · ${fmtDist(near.offset)} away`;
   pill.hidden = false;
 }
-map.on('moveend zoomend', updateFindTrack);
+map.on('moveend zoomend rotate', updateFindTrack);
 
 // ---------- recording ----------
 let recSaveTimer = null;

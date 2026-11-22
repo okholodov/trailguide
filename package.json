@@ -12,7 +12,8 @@
     "sample": "node scripts/make-sample.js"
   },
   "dependencies": {
-    "leaflet": "^1.9.4"
+    "leaflet": "^1.9.4",
+    "leaflet-rotate": "0.2.8"
   },
   "devDependencies": {
     "vite": "^8.3.8"
